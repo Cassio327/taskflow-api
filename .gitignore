@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Ambientes virtuais
+.venv/
+venv/
+
+# Testes e cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Variáveis de ambiente e segredos
+.env
+.env.*
+!.env.example
+
+# Bancos de dados locais
+*.db
+*.sqlite
+*.sqlite3
+
+# Editor e sistema
+.vscode/
+.idea/
+.DS_Store
+
+# Empacotamento
+build/
+dist/
+*.egg-info/
