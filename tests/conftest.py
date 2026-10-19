@@ -6,7 +6,10 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.db.base import Base
 from app.db.session import get_db
+from app.models import task as task_model
+from app.models import user as user_model
 from app.main import app
 
 
@@ -35,7 +38,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]
         with test_session() as db:
             yield db
 
-    monkeypatch.setattr("app.main.engine", test_engine)
+    Base.metadata.create_all(bind=test_engine)
     app.dependency_overrides[get_db] = override_get_db
     try:
         with TestClient(app) as test_client:
