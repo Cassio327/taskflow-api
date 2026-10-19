@@ -2,15 +2,77 @@
 
 [![CI - TaskFlow API](https://github.com/Cassio327/taskflow-api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Cassio327/taskflow-api/actions/workflows/ci.yml)
 
-API REST multiusuário para gerenciamento de tarefas, com **FastAPI, SQLAlchemy, JWT, Argon2id, PostgreSQL/SQLite, Alembic e testes Pytest**. Cada pessoa só acessa suas próprias tarefas.
+API REST multiusuário para gerenciamento de tarefas com **FastAPI, SQLAlchemy, Pydantic, JWT, Argon2id, PostgreSQL, Alembic, Docker e Pytest**. Cada usuário pode consultar e modificar apenas suas próprias tarefas.
 
 ## Requisitos
 
-- Python 3.11 recomendado (mínimo: Python 3.10).
-- PostgreSQL 17 via Docker (opcional). SQLite continua disponível para desenvolvimento e testes.
-- `openssl` para gerar a chave secreta da autenticação.
+- Para usar Docker: Docker Engine e plugin Docker Compose (`docker compose`).
+- Sem Docker: Python 3.11, com suporte a SQLite ou PostgreSQL instalado separadamente.
+- `openssl` para gerar credenciais aleatórias para desenvolvimento local.
 
-## Instalação e configuração local
+## Executar com Docker Compose (recomendado)
+
+Na pasta do projeto, execute:
+
+```bash
+cp -n .env.example .env
+sed -i "s/^SECRET_KEY=$/SECRET_KEY=$(openssl rand -hex 32)/" .env
+sed -i "s/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" .env
+
+docker compose up --build -d
+docker compose ps
+docker compose logs -f api
+```
+
+Abra <http://127.0.0.1:8000/docs> para acessar o Swagger ou <http://127.0.0.1:8000/healthcheck> para verificar o status da API.
+
+**Como funciona:** `docker-compose.yml` sobe o PostgreSQL 17 com o serviço `db` e a aplicação FastAPI com o serviço `api`. O Compose aguarda o banco ficar saudável (`pg_isready`) antes de iniciar a API. Em seguida, `entrypoint.sh` executa `alembic upgrade head` e só então inicia o Uvicorn. Uma migração que falhe impede o servidor de iniciar.
+
+A aplicação roda com usuário não privilegiado dentro de uma imagem Python 3.11-slim de dois estágios. O serviço PostgreSQL não publica a porta `5432` no host; a API fica disponível somente na interface local `127.0.0.1:8000` (não diretamente na internet).
+
+O arquivo `.env` é local e ignorado pelo Git e pela imagem Docker. O Compose usa `SECRET_KEY`, `POSTGRES_PASSWORD`, `ALGORITHM` e `ACCESS_TOKEN_EXPIRE_MINUTES`. A URL de conexão **dentro do container** usa o hostname `db` e é passada por variável de ambiente; a `DATABASE_URL` do `.env` serve para o Python executado diretamente no Ubuntu. Gere `POSTGRES_PASSWORD` como valor hexadecimal, evitando caracteres que precisem de codificação especial na URL SQLAlchemy.
+
+### Operações do Docker
+
+```bash
+# Subir/recriar containers em segundo plano
+docker compose up --build -d
+
+# Acompanhar logs
+docker compose logs -f api
+docker compose logs -f db
+
+# Verificar serviços
+docker compose ps
+
+# Executar testes (SQLite em memória para isolamento)
+docker compose exec api python -m pytest -q
+
+# Confirmar versão de migração no PostgreSQL
+docker compose exec api alembic current
+
+# Verificar conexão real com PostgreSQL
+docker compose exec api python -c "from sqlalchemy import text; from app.db.session import engine; c = engine.connect(); print(c.execute(text('SELECT 1')).scalar_one()); c.close()"
+
+# Parar e remover os containers, preservando os dados
+docker compose down
+```
+
+**Importante:** nunca use `docker compose down -v` se quiser preservar as tarefas e os usuários: `-v` remove o volume persistente `postgres_data`. Os dados continuam após `docker compose down` e um novo `docker compose up`.
+
+Se você já executava **somente o PostgreSQL** com o Compose da Etapa 5, use `docker compose down` antes de subir o arquivo novo para parar o container antigo. O volume `postgres_data` é preservado, desde que mantenha a mesma pasta/nome de projeto do Compose. Se o volume tiver sido inicializado anteriormente, **não troque** sua senha apenas editando `.env`: altere-a também no próprio PostgreSQL.
+
+### Primeiro teste da API com PostgreSQL
+
+1. Abra o Swagger em <http://127.0.0.1:8000/docs>.
+2. Cadastre-se em `POST /auth/register` com `{"email":"usuario@example.com","password":"UmaSenhaForte123!"}`.
+3. Clique em **Authorize**, use o e-mail no campo `username` e a senha no campo `password`.
+4. Crie uma tarefa em `POST /tasks` e liste-a em `GET /tasks`.
+5. Cadastre outro usuário e verifique que ele não consegue visualizar a primeira tarefa.
+
+Isso valida o fluxo de autenticação e persistência no PostgreSQL de verdade. Os testes automatizados com SQLite não substituem esse teste fim a fim.
+
+## Executar sem Docker (SQLite)
 
 ```bash
 python3 -m venv .venv
@@ -19,142 +81,94 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 cp -n .env.example .env
 sed -i "s/^SECRET_KEY=$/SECRET_KEY=$(openssl rand -hex 32)/" .env
+alembic upgrade head
+uvicorn app.main:app --reload
 ```
 
-A aplicação lê automaticamente as variáveis do `.env` por meio de `app/core/config.py` (`pydantic-settings`). Variáveis exportadas no sistema têm prioridade sobre os valores no `.env`.
+O valor padrão `DATABASE_URL=sqlite:///./taskflow.db` é adequado para desenvolvimento local. Para executar o servidor fora do Docker **contra o PostgreSQL** do Compose, é necessário expor a porta do serviço `db` em `127.0.0.1:5432` (configuração opcional) e alterar a URL local para usar `127.0.0.1`, pois o hostname `db` só é resolvido dentro da rede Docker.
 
-| Variável | Finalidade | Padrão seguro |
+## Configurações
+
+| Variável | Descrição | Valor padrão |
 | --- | --- | --- |
-| `DATABASE_URL` | URL SQLAlchemy de conexão | `sqlite:///./taskflow.db` |
-| `SECRET_KEY` | Assinatura dos JWT | **Obrigatória**: mínimo de 32 bytes aleatórios, sem valor padrão |
-| `ALGORITHM` | Algoritmo aceito para JWT | `HS256` (único permitido) |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | Duração do acesso | `30` |
-| `POSTGRES_PASSWORD` | Senha inicial do Postgres Docker | Obrigatória **somente** ao usar Compose |
+| `DATABASE_URL` | URL SQLAlchemy da conexão quando usado fora do Compose | `sqlite:///./taskflow.db` |
+| `SECRET_KEY` | Chave para assinatura JWT | Obrigatória, pelo menos 32 bytes aleatórios |
+| `ALGORITHM` | Algoritmo de JWT | `HS256` |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Expiração do token JWT | `30` |
+| `POSTGRES_PASSWORD` | Credencial inicial do banco no Compose | Obrigatória para Docker |
 
-**Nunca publique seu `.env`**. Ele é ignorado pelo Git. Para produção, configure os segredos no ambiente do serviço de hospedagem, use HTTPS e mantenha credenciais fortes.
+**Segurança:** nunca publique `.env`, tokens ou senhas. Use credenciais exclusivas por ambiente. Para produção, utilize HTTPS, gerenciador de segredos, backups e estratégia de migração sem executar simultaneamente múltiplas instâncias migradoras.
 
-### Opção A — SQLite local (sem Docker)
+## Alembic — controle das migrações
 
-Deixe `DATABASE_URL=sqlite:///./taskflow.db` no `.env` e rode:
+O Alembic usa `Base.metadata`, os modelos `User` e `Task` e a URL configurada para aplicar revisões incrementais. A primeira revisão (`0001_initial`) cria tabelas, índices e a chave estrangeira `tasks.user_id`.
 
 ```bash
+# Execute sem Docker depois de ativar .venv e configurar DATABASE_URL
 alembic upgrade head
-uvicorn app.main:app --reload
+alembic current
+alembic check
+alembic revision --autogenerate -m "nova alteracao"
+
+# Ou execute dentro do container que já está rodando
+docker compose exec api alembic current
+docker compose exec api alembic check
 ```
 
-### Opção B — PostgreSQL com Docker Compose
+Revise migrações autogeradas antes de aplicá-las. **Em bancos já existentes**, `0001_initial` não deve recriar tabelas existentes: faça backup e planeje a migração adequada; não elimine dados importantes. O script de entrada executa automaticamente as migrações ao inicializar a API no Compose.
 
-O arquivo `docker-compose.yml` cria um Postgres 17 com volume persistente, `healthcheck` e porta exposta somente em `127.0.0.1` no computador local.
-
-```bash
-# Na pasta raiz do projeto, após criar o .env e configurar SECRET_KEY:
-POSTGRES_PASSWORD=$(openssl rand -hex 16)
-sed -i "s/^POSTGRES_PASSWORD=.*$/POSTGRES_PASSWORD=$POSTGRES_PASSWORD/" .env
-sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql+psycopg2://taskflow:$POSTGRES_PASSWORD@127.0.0.1:5432/taskflow|" .env
-
-docker compose up -d
-# Verifique se o banco está pronto: docker compose ps
-alembic upgrade head
-uvicorn app.main:app --reload
-```
-
-Execute a configuração de senha do PostgreSQL apenas na primeira inicialização do volume. Esses comandos utilizam uma senha hexadecimal para evitar caracteres que precisariam ser codificados na URL. Se usar senha com `@`, `:` ou `/`, faça URL-encoding na `DATABASE_URL`.
-
-> Alterar `POSTGRES_PASSWORD` após o banco já ter sido inicializado não altera a senha do usuário existente no volume Docker. Gerencie a alteração dentro do próprio PostgreSQL se necessário.
-
-## Migrações com Alembic
-
-O schema é versionado no diretório `alembic/versions/`. Na Etapa 5, a migração `0001_initial` cria `users`, `tasks`, seus índices e a chave estrangeira `tasks.user_id`.
-
-```bash
-alembic upgrade head                           # aplicar todas as revisões pendentes
-alembic current                                # mostrar versão atual no banco
-alembic history                                # histórico de revisões
-alembic check                                  # conferir se modelos e schema divergem
-alembic revision --autogenerate -m "nova mudança"  # gerar uma proposta de migração
-```
-
-**Revise qualquer migração autogerada antes de executá-la.** O Alembic compara `Base.metadata` dos modelos importados no `alembic/env.py` com o banco definido por `DATABASE_URL`. A aplicação **não chama mais `create_all()` ao iniciar**; execute `alembic upgrade head` antes de subir o servidor.
-
-### Banco SQLite já existente das Etapas 3 ou 4
-
-A migração `0001_initial` é destinada a **bancos vazios**. Se você já usa `taskflow.db`, fazer `alembic upgrade head` nesse banco com tabelas existentes pode falhar com `table already exists`. **Não apague o banco se houver dados importantes.**
-
-Opção segura para desenvolvimento: faça backup e aponte o `.env` para um arquivo novo, sem destruir o antigo:
-
-```bash
-cp taskflow.db "taskflow-backup-$(date +%Y%m%d-%H%M%S).sqlite3"
-sed -i 's|^DATABASE_URL=.*|DATABASE_URL=sqlite:///./taskflow-v5.db|' .env
-alembic upgrade head
-```
-
-Se precisar **preservar e migrar os dados antigos**, planeje uma migração específica. Um banco da Etapa 3 sequer possui usuários para associar às tarefas; não se deve atribuir proprietários automaticamente. Para um banco da Etapa 4 cujo esquema tenha sido **confirmado idêntico** à migração inicial, `alembic stamp head` pode apenas registrar a revisão existente — **não** altera nem valida a estrutura do banco por si só. Faça backup e confira o schema antes de usar `stamp`.
-
-## Executar e testar
-
-Após aplicar as migrações:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-API local: http://127.0.0.1:8000/; documentação Swagger: http://127.0.0.1:8000/docs.
+## Testes e CI
 
 ```bash
 python -m pytest -q
 ```
 
-Os testes usam SQLite em memória e isolam o banco de dados do ambiente configurado. O CI executa testes, aplica a migração inicial a um SQLite temporário e roda `alembic check`. Não é necessário iniciar Docker para a suíte de testes.
+Os testes existentes utilizam SQLite em memória e dependências substituídas para não alterar o banco real. O GitHub Actions roda a suíte de Pytest e valida o Alembic em um banco SQLite temporário. Testes de integração completos com PostgreSQL ainda devem ser realizados no ambiente Docker.
 
 ## Endpoints
 
-| Método | Endpoint | Autenticação | Descrição |
+| Método | Endpoint | Autenticação | Função |
 | --- | --- | --- | --- |
-| GET | `/` | Não | Status da aplicação |
+| GET | `/` | Não | Status da API |
 | GET | `/healthcheck` | Não | Healthcheck |
-| POST | `/auth/register` | Não | Criar usuário |
-| POST | `/auth/token` | Não | Login OAuth2 e JWT |
-| POST | `/tasks` | JWT | Criar tarefa do usuário atual |
-| GET | `/tasks` | JWT | Listar tarefas próprias (filtros `completed` e `priority`) |
-| GET | `/tasks/{task_id}` | JWT | Buscar sua tarefa |
-| PUT | `/tasks/{task_id}` | JWT | Atualizar sua tarefa |
-| DELETE | `/tasks/{task_id}` | JWT | Excluir sua tarefa |
+| POST | `/auth/register` | Não | Cadastro de usuários |
+| POST | `/auth/token` | Não | Login OAuth2 e retorno JWT |
+| POST | `/tasks` | Bearer JWT | Criar tarefa própria |
+| GET | `/tasks` | Bearer JWT | Listar e filtrar tarefas próprias |
+| GET | `/tasks/{task_id}` | Bearer JWT | Buscar tarefa própria |
+| PUT | `/tasks/{task_id}` | Bearer JWT | Atualizar tarefa própria |
+| DELETE | `/tasks/{task_id}` | Bearer JWT | Remover tarefa própria |
 
-### Autenticação
-
-1. Cadastre-se em `POST /auth/register` com JSON: `{"email":"pessoa@example.com","password":"UmaSenhaForte123!"}`.
-2. Faça login em `POST /auth/token` com **formulário**, usando e-mail no campo `username` e senha no campo `password`.
-3. Em `/docs`, clique em **Authorize** para informar credenciais. O Swagger obterá o token e adicionará automaticamente `Authorization: Bearer ...` nas rotas protegidas.
-
-Senhas são armazenadas como hash **Argon2id**. Tokens JWT usam exclusivamente **HS256** e expiram após o tempo configurado. O usuário é identificado pelo JWT, nunca pelo `user_id` informado pelo cliente. Acesso a tarefa de outro usuário retorna 404.
-
-## Estrutura principal
+## Estrutura do projeto
 
 ```text
-app/
-  api/routes/       # auth, tasks e health
-  core/config.py    # variáveis de ambiente validadas
-  core/security.py  # Argon2id e JWT
-  db/session.py     # engine PostgreSQL/SQLite e sessão
-  models/           # tabelas ORM
-  schemas/          # modelos de entrada e saída
-  services/         # regras de negócio
+Dockerfile
+.dockerignore
+entrypoint.sh
+docker-compose.yml
+.env.example
+alembic.ini
 alembic/
   env.py
   versions/0001_initial_migration.py
+app/
+  api/routes/
+  core/
+  db/
+  models/
+  schemas/
+  services/
+tests/
 .github/workflows/ci.yml
-README.md
-requirements.txt
-docker-compose.yml
-.env.example
 ```
 
 ## Status do projeto
 
 - [x] Etapa 1 — Estrutura inicial com FastAPI.
 - [x] Etapa 2 — CRUD de tarefas com SQLAlchemy.
-- [x] Etapa 3 — Testes e CI com GitHub Actions.
-- [x] Etapa 4 — Autenticação JWT e isolamento por usuário.
-- [x] Etapa 5 — PostgreSQL, configuração por ambiente e migrações Alembic.
+- [x] Etapa 3 — Pytest e GitHub Actions.
+- [x] Etapa 4 — JWT, Argon2id e isolamento por usuário.
+- [x] Etapa 5 — PostgreSQL, variáveis de ambiente e Alembic.
+- [x] Etapa 6 — Dockerização da API e orquestração com PostgreSQL.
 
-Próximas melhorias possíveis: Dockerfile para a API, deploy com HTTPS, rate limiting de login, análise estática, backups e observabilidade. O PostgreSQL em execução real deve ser validado no ambiente com Docker; o CI usa SQLite para ser leve.
+**Próxima etapa:** disponibilizar a API em um ambiente de hospedagem com HTTPS e política de backups. Antes do deploy, testar o Compose com PostgreSQL real e avaliar como gerenciar migrações em produção.

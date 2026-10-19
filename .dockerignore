@@ -1,0 +1,30 @@
+# Controle de versao e ambiente local
+.git
+.gitignore
+.github
+.env
+.env.*
+!.env.example
+.venv
+venv
+
+# Python, testes e build
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Dados e arquivos locais
+*.db
+*.sqlite
+*.sqlite3
+.vscode/
+.idea/
+.DS_Store
+
+# Artefatos locais
+*.zip
